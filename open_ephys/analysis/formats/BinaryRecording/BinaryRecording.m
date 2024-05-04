@@ -36,6 +36,19 @@ classdef BinaryRecording < Recording
             self.format = 'Binary';
 
             self.info = jsondecode(fileread(fullfile(self.directory,'structure.oebin')));
+            
+            % Found a weird bug where Neuropixel PXI recordings have
+            % info.continuous.channels as a cell array and NI DAQ
+            % recordings have it as a struct            
+            for j = 1:length(self.info.continuous)
+                if ~isempty(self.info.continuous(j).channels) && ...
+                    iscell(self.info.continuous(j).channels)
+                    try    
+                    self.info.continuous(j).channels{end}.channel_metadata = [];
+                    self.info.continuous(j).channels = [self.info.continuous(j).channels{:}];
+                    end
+                end
+            end                  
 
             self = self.loadContinuous();
             self = self.loadEvents();
@@ -72,9 +85,20 @@ classdef BinaryRecording < Recording
 
                 stream.sampleNumbers = readNPY(fullfile(directory, 'sample_numbers.npy'));
 
-                data = memmapfile(fullfile(directory, 'continuous.dat'), 'Format', 'int16');
+                
+                % Original code
+                % data = memmapfile(fullfile(directory, 'continuous.dat'), 'Format', 'int16');
+                % stream.samples = reshape(data.Data, [stream.metadata.numChannels, length(data.Data) / stream.metadata.numChannels]);
+                
+                % My code
+                stream.metadata.numSamples = length(stream.sampleNumbers);
+                
+                % Need to keep the memmap object otherwise when it is
+                % cleared matlab has to load the data fully into memory
+                stream.memmap = memmapfile(fullfile(directory, 'continuous.dat'), 'Format', ...
+                    {'int16', [stream.metadata.numChannels stream.metadata.numSamples],'data'});   
 
-                stream.samples = reshape(data.Data, [stream.metadata.numChannels, length(data.Data) / stream.metadata.numChannels]);
+                stream.samples = stream.memmap.Data.data;
 
                 stream.metadata.startTimestamp = stream.timestamps(1);
 
@@ -206,6 +230,18 @@ classdef BinaryRecording < Recording
 
             end
 
+        end
+
+        function delete(self)
+            % Destructor to gracefully remove the memorymapped data before
+            % the memmap object so as to not load anything into memory
+            streams = self.continuous.keys;
+            for streamI = 1:length(streams)
+                stream = self.continuous(streams{streamI});
+                stream.samples = [];
+                self.continuous(streams{streamI}) = stream;
+                self.continuous.remove(streams{streamI});
+            end            
         end
 
     end
